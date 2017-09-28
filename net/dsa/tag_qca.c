@@ -63,7 +63,8 @@ static struct sk_buff *qca_tag_xmit(struct sk_buff *skb, struct net_device *dev)
 }
 
 static struct sk_buff *qca_tag_rcv(struct sk_buff *skb, struct net_device *dev,
-				   struct packet_type *pt)
+				   struct packet_type *pt,
+				   struct dsa_switch **src_dev, int *src_port)
 {
 	struct dsa_switch_tree *dst = dev->dsa_ptr;
 	struct dsa_port *cpu_dp = dsa_get_cpu_port(dst);
@@ -106,6 +107,9 @@ static struct sk_buff *qca_tag_rcv(struct sk_buff *skb, struct net_device *dev,
 
 	/* Update skb & forward the frame accordingly */
 	skb->dev = ds->ports[port].netdev;
+
+	*src_dev = ds;
+	*src_port = port;
 
 	return skb;
 }

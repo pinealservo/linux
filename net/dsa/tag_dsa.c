@@ -65,7 +65,8 @@ static struct sk_buff *dsa_xmit(struct sk_buff *skb, struct net_device *dev)
 }
 
 static struct sk_buff *dsa_rcv(struct sk_buff *skb, struct net_device *dev,
-			       struct packet_type *pt)
+			       struct packet_type *pt,
+			       struct dsa_switch **src_dev, int *src_port)
 {
 	struct dsa_switch_tree *dst = dev->dsa_ptr;
 	struct dsa_switch *ds;
@@ -154,6 +155,9 @@ static struct sk_buff *dsa_rcv(struct sk_buff *skb, struct net_device *dev,
 	}
 
 	skb->dev = ds->ports[source_port].netdev;
+
+	*src_dev = ds;
+	*src_port = source_port;
 
 	return skb;
 }

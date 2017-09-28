@@ -68,7 +68,8 @@ static struct sk_buff *lan9303_xmit(struct sk_buff *skb, struct net_device *dev)
 }
 
 static struct sk_buff *lan9303_rcv(struct sk_buff *skb, struct net_device *dev,
-			struct packet_type *pt)
+			struct packet_type *pt,
+			struct dsa_switch **src_dev, int *src_port)
 {
 	u16 *lan9303_tag;
 	struct dsa_switch_tree *dst = dev->dsa_ptr;
@@ -122,6 +123,9 @@ static struct sk_buff *lan9303_rcv(struct sk_buff *skb, struct net_device *dev,
 
 	/* forward the packet to the dedicated interface */
 	skb->dev = ds->ports[source_port].netdev;
+
+	*src_dev = ds;
+	*src_port = source_port;
 
 	return skb;
 }

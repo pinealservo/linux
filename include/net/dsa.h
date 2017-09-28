@@ -101,11 +101,14 @@ struct dsa_platform_data {
 };
 
 struct packet_type;
+struct dsa_switch;
 
 struct dsa_device_ops {
 	struct sk_buff *(*xmit)(struct sk_buff *skb, struct net_device *dev);
 	struct sk_buff *(*rcv)(struct sk_buff *skb, struct net_device *dev,
-			       struct packet_type *pt);
+			       struct packet_type *pt,
+			       struct dsa_switch **src_dev,
+			       int *src_port);
 	int (*flow_dissect)(const struct sk_buff *skb, __be16 *proto,
 			    int *offset);
 };
@@ -134,7 +137,9 @@ struct dsa_switch_tree {
 	/* Copy of tag_ops->rcv for faster access in hot path */
 	struct sk_buff *	(*rcv)(struct sk_buff *skb,
 				       struct net_device *dev,
-				       struct packet_type *pt);
+				       struct packet_type *pt,
+				       struct dsa_switch **src_dev,
+				       int *src_port);
 
 	/*
 	 * The switch port to which the CPU is attached.
@@ -450,6 +455,10 @@ struct dsa_switch_ops {
 				     struct ifreq *ifr);
 	int	(*port_hwtstamp_set)(struct dsa_switch *ds, int port,
 				     struct ifreq *ifr);
+	void	(*port_txtstamp)(struct dsa_switch *ds, int port,
+				 struct sk_buff *clone, unsigned int type);
+	bool	(*port_rxtstamp)(struct dsa_switch *ds, int port,
+				 struct sk_buff *skb, unsigned int type);
 };
 
 struct dsa_switch_driver {
