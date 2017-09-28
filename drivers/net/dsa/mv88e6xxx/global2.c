@@ -971,6 +971,77 @@ int mv88e6xxx_g2_smi_phy_write(struct mv88e6xxx_chip *chip, struct mii_bus *bus,
 						   val);
 }
 
+/* Offset 0x1A: Scratch and Misc. Register */
+static int mv88e6xxx_g2_scratch_reg_read(struct mv88e6xxx_chip *chip,
+					 int reg, u8 *data)
+{
+	int err;
+	u16 value;
+
+	err = mv88e6xxx_g2_write(chip, MV88E6XXX_G2_SCRATCH_MISC_MISC,
+				 reg << 8);
+	if (err)
+		return err;
+
+	err = mv88e6xxx_g2_read(chip, MV88E6XXX_G2_SCRATCH_MISC_MISC, &value);
+	if (err)
+		return err;
+
+	*data = (value & MV88E6XXX_G2_SCRATCH_MISC_DATA_MASK);
+
+	return 0;
+}
+
+static int mv88e6xxx_g2_scratch_reg_write(struct mv88e6xxx_chip *chip,
+					  int reg, u8 data)
+{
+	u16 value = (reg << 8) | data;
+
+	return mv88e6xxx_g2_update(chip, MV88E6XXX_G2_SCRATCH_MISC_MISC, value);
+}
+
+/* Configures the specified pin for the specified function. This function
+ * does not unset other pins configured for the same function. If multiple
+ * pins are configured for the same function, the lower-index pin gets
+ * that function and the higher-index pin goes back to being GPIO.
+ */
+int mv88e6xxx_g2_set_gpio_config(struct mv88e6xxx_chip *chip, int pin,
+				 int func, int dir)
+{
+	int mode_reg = MV88E6XXX_G2_SCRATCH_GPIO_MODE(pin);
+	int dir_reg = MV88E6XXX_G2_SCRATCH_GPIO_DIR(pin);
+	int err;
+	u8 val;
+
+	if (pin < 0 || pin >= mv88e6xxx_num_gpio(chip))
+		return -ERANGE;
+
+	/* Set function first */
+	err = mv88e6xxx_g2_scratch_reg_read(chip, mode_reg, &val);
+	if (err)
+		return err;
+
+	/* Zero bits in the field for this GPIO and OR in new config */
+	val &= ~MV88E6XXX_G2_SCRATCH_GPIO_MODE_MASK(pin);
+	val |= (func << MV88E6XXX_G2_SCRATCH_GPIO_MODE_OFFSET(pin));
+
+	err = mv88e6xxx_g2_scratch_reg_write(chip, mode_reg, val);
+	if (err)
+		return err;
+
+	/* Set direction */
+	err = mv88e6xxx_g2_scratch_reg_read(chip, dir_reg, &val);
+	if (err)
+		return err;
+
+	/* Zero bits in the field for this GPIO and OR in new config */
+	val &= ~MV88E6XXX_G2_SCRATCH_GPIO_DIR_MASK(pin);
+	val |= (dir << MV88E6XXX_G2_SCRATCH_GPIO_DIR_OFFSET(pin));
+
+	return mv88e6xxx_g2_scratch_reg_write(chip, dir_reg, val);
+}
+
+/* Offset 0x1B: Watchdog Control */
 static int mv88e6097_watchdog_action(struct mv88e6xxx_chip *chip, int irq)
 {
 	u16 reg;

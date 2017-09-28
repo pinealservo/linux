@@ -242,6 +242,29 @@
 #define MV88E6352_G2_NOEGR_POLICY	0x2000
 #define MV88E6390_G2_LAG_ID_4		0x2000
 
+/* Scratch/Misc registers accessed through MV88E6XXX_G2_SCRATCH_MISC */
+#define MV88E6XXX_G2_SCRATCH_GPIO_CONFIG_LO	0x60
+#define MV88E6XXX_G2_SCRATCH_GPIO_CONFIG_HI	0x61
+#define MV88E6XXX_G2_SCRATCH_GPIO_DIR(pin)	(0x62 + ((pin) / 8))
+#define MV88E6XXX_G2_SCRATCH_GPIO_DIR_OFFSET(pin) \
+			((pin) & 0x7)
+#define MV88E6XXX_G2_SCRATCH_GPIO_DIR_MASK(pin)	\
+			(1 << MV88E6XXX_G2_SCRATCH_GPIO_DIR_OFFSET(pin))
+#define MV88E6XXX_G2_SCRATCH_GPIO_DIR_OUT	0
+#define MV88E6XXX_G2_SCRATCH_GPIO_DIR_IN	1
+#define MV88E6XXX_G2_SCRATCH_GPIO_DATA(pin)	(0x64 + ((pin) / 8))
+#define MV88E6XXX_G2_SCRATCH_GPIO_MODE(pin)	(0x68 + ((pin) / 2))
+#define MV88E6XXX_G2_SCRATCH_GPIO_MODE_OFFSET(pin) \
+			((pin) & 0x1 ? 4 : 0)
+#define MV88E6XXX_G2_SCRATCH_GPIO_MODE_MASK(pin) \
+			(0x7 << MV88E6XXX_G2_SCRATCH_GPIO_MODE_OFFSET(pin))
+#define MV88E6XXX_G2_SCRATCH_GPIO_MODE_GPIO	0
+#define MV88E6XXX_G2_SCRATCH_GPIO_MODE_TRIG	1
+#define MV88E6XXX_G2_SCRATCH_GPIO_MODE_EVREQ	2
+#define MV88E6XXX_G2_SCRATCH_GPIO_MODE_EXTCLK	3
+#define MV88E6XXX_G2_SCRATCH_GPIO_MODE_RXCLK0	4
+#define MV88E6XXX_G2_SCRATCH_GPIO_MODE_RXCLK1	5
+
 #ifdef CONFIG_NET_DSA_MV88E6XXX_GLOBAL2
 
 static inline int mv88e6xxx_g2_require(struct mv88e6xxx_chip *chip)
@@ -269,6 +292,9 @@ int mv88e6xxx_g2_get_eeprom16(struct mv88e6xxx_chip *chip,
 			      struct ethtool_eeprom *eeprom, u8 *data);
 int mv88e6xxx_g2_set_eeprom16(struct mv88e6xxx_chip *chip,
 			      struct ethtool_eeprom *eeprom, u8 *data);
+
+int mv88e6xxx_g2_set_gpio_config(struct mv88e6xxx_chip *chip, int pin,
+				 int func, int dir);
 
 int mv88e6xxx_g2_pvt_write(struct mv88e6xxx_chip *chip, int src_dev,
 			   int src_port, u16 data);
@@ -357,6 +383,12 @@ static inline int mv88e6xxx_g2_get_eeprom16(struct mv88e6xxx_chip *chip,
 static inline int mv88e6xxx_g2_set_eeprom16(struct mv88e6xxx_chip *chip,
 					    struct ethtool_eeprom *eeprom,
 					    u8 *data)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int mv88e6xxx_g2_set_gpio_config(struct mv88e6xxx_chip *chip,
+					       int pin, int func, int dir)
 {
 	return -EOPNOTSUPP;
 }

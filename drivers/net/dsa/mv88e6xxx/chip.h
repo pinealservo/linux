@@ -41,6 +41,8 @@
 #define MV88E6XXX_MAX_PVT_SWITCHES	32
 #define MV88E6XXX_MAX_PVT_PORTS		16
 
+#define MV88E6XXX_MAX_GPIO	16
+
 enum mv88e6xxx_egress_mode {
 	MV88E6XXX_EGRESS_MODE_UNMODIFIED,
 	MV88E6XXX_EGRESS_MODE_UNTAGGED,
@@ -107,6 +109,7 @@ struct mv88e6xxx_info {
 	const char *name;
 	unsigned int num_databases;
 	unsigned int num_ports;
+	unsigned int num_gpio;
 	unsigned int max_vid;
 	unsigned int port_base_addr;
 	unsigned int global1_addr;
@@ -415,6 +418,11 @@ static inline unsigned int mv88e6xxx_num_ports(struct mv88e6xxx_chip *chip)
 static inline u16 mv88e6xxx_port_mask(struct mv88e6xxx_chip *chip)
 {
 	return GENMASK(mv88e6xxx_num_ports(chip) - 1, 0);
+}
+
+static inline unsigned int mv88e6xxx_num_gpio(struct mv88e6xxx_chip *chip)
+{
+	return chip->info->num_gpio;
 }
 
 int mv88e6xxx_read(struct mv88e6xxx_chip *chip, int addr, int reg, u16 *val);
