@@ -20,6 +20,12 @@
 
 #define TAI_EVENT_WORK_INTERVAL msecs_to_jiffies(100)
 
+#define NS_PER_CYC 8
+#define FRAC_SHIFT 28
+#define CC_WIDTH 32
+#define CC_MULT (NS_PER_CYC << FRAC_SHIFT)
+#define PEROUT_DELAY_CYCLES 3
+
 static int mv88e6xxx_tai_read(struct mv88e6xxx_chip *chip, int addr,
 			      u16 *data, int len)
 {
@@ -65,13 +71,15 @@ static int mv88e6xxx_disable_trig(struct mv88e6xxx_chip *chip)
 }
 
 static int mv88e6xxx_config_periodic_trig(struct mv88e6xxx_chip *chip,
-					  u32 ns, u16 picos)
+					  u32 ns, u16 picos, u32 start)
 {
 	int err;
 	u16 global_config;
 
-	if (picos >= 1000)
+	if (picos >= 1000) {
+		dev_info(chip->dev, "Too many picos\n");
 		return -ERANGE;
+	}
 
 	/* TRIG generation is in units of 8 ns clock periods. Convert ns
 	 * and ps into 8 ns clock periods and up to 8000 additional ps
@@ -93,6 +101,17 @@ static int mv88e6xxx_config_periodic_trig(struct mv88e6xxx_chip *chip,
 				  picos);
 	if (err)
 		return err;
+
+	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_TIME_LO,
+				  start & 0xffff);
+	if (err)
+		return err;
+
+	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_TIME_HI,
+				  start >> 16);
+	if (err)
+		return err;
+
 
 	chip->trig_config = MV88E6XXX_TAI_CFG_TRIG_ENABLE;
 	global_config = (chip->evcap_config | chip->trig_config);
@@ -198,6 +217,34 @@ static int mv88e6xxx_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 	return -EOPNOTSUPP;
 }
 
+static int mv88e6xxx_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
+{
+	u64 adj;
+	u32 diff, mult;
+	int neg_adj = 0;
+	struct mv88e6xxx_priv_state *chip =
+		container_of(ptp, struct mv88e6xxx_priv_state, ptp_clock_info);
+
+	if (ppb == 0)
+		return 0;
+
+	if (ppb < 0) {
+		neg_adj = 1;
+		ppb = -ppb;
+	}
+	mult = CC_MULT;
+	adj = mult;
+	adj *= ppb;
+	diff = div_u64(adj, 1000000000ULL);
+
+	mutex_lock(&chip->reg_lock);
+	timecounter_read(&chip->tstamp_tc);
+	chip->tstamp_cc.mult = neg_adj ? mult - diff : mult + diff;
+	mutex_unlock(&chip->reg_lock);
+
+	return 0;
+}
+
 static int mv88e6xxx_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
 	struct mv88e6xxx_chip *chip =
@@ -287,33 +334,76 @@ static int mv88e6xxx_ptp_enable_perout(struct mv88e6xxx_chip *chip,
 				       struct ptp_clock_request *rq, int on)
 {
 	struct timespec ts;
-	u64 ns;
+	struct timecounter *tc = &chip->tstamp_tc;
+	u64 period_ns, now_ns, start_ns;
+	u64 wait_ns, wait_cyc, frac_ns;
+	u32 start_cyc, mult, shift, picos;
 	int pin;
 	int err;
 
-	pin = ptp_find_pin(chip->ptp_clock, PTP_PF_PEROUT, rq->extts.index);
+	pin = ptp_find_pin(chip->ptp_clock, PTP_PF_PEROUT, rq->perout.index);
+
+	dev_info(chip->dev, "%s perout on pin %d\n", on ? "enable" : "disable", pin);
 
 	if (pin < 0)
 		return -EBUSY;
 
-	ts.tv_sec = rq->perout.period.sec;
-	ts.tv_nsec = rq->perout.period.nsec;
-	ns = timespec_to_ns(&ts);
-
-	if (ns > U32_MAX)
-		return -ERANGE;
-
-	mutex_lock(&chip->reg_lock);
-
-	err = mv88e6xxx_config_periodic_trig(chip, (u32)ns, 0);
-	if (err)
-		goto out;
-
 	if (on) {
+		ts.tv_sec = rq->perout.period.sec;
+		ts.tv_nsec = rq->perout.period.nsec;
+		period_ns = timespec_to_ns(&ts);
+
+		if (period_ns > U32_MAX) {
+			dev_info(chip->dev, "period_ns too large\n");
+			return -ERANGE;
+		}
+
+		ts.tv_sec = rq->perout.start.sec;
+		ts.tv_nsec = rq->perout.start.nsec;
+		start_ns = timespec_to_ns(&ts);
+
+		mutex_lock(&chip->reg_lock);
+
+		now_ns = timecounter_read(tc);
+		chip->last_overflow_check = jiffies;
+		mult = chip->tstamp_cc.mult;
+		shift = chip->tstamp_cc.shift;
+		frac_ns = chip->tstamp_tc.frac;
+
+		mutex_unlock(&chip->reg_lock);
+
+		if (now_ns > start_ns) {
+			dev_info(chip->dev, "can't start in the past\n");
+			return -ERANGE;
+		}
+
+		wait_ns = start_ns - now_ns;
+		wait_cyc = ((wait_ns << shift) - frac_ns) / mult;
+		start_cyc = (tc->cycle_last + wait_cyc) - PEROUT_DELAY_CYCLES;
+		if (start_cyc > tc->cc->mask) {
+			dev_info(chip->dev, "too far in the future\n");
+			return -ERANGE;
+		}
+		period_ns = (period_ns << shift) / mult;
+		picos = ((period_ns & 0x7) * 1000) >> 3;
+		period_ns = period_ns << 3;
+
+		dev_info(chip->dev, "Time: %llu (%llu cyc), start in %llu ns (%llu cyc) at ns %llu cycle %u period %u.%u\n",
+			 now_ns, tc->cycle_last, wait_ns, wait_cyc, start_ns, start_cyc, (u32)period_ns, picos);
+
+		mutex_lock(&chip->reg_lock);
+
+		err = mv88e6xxx_config_periodic_trig(chip, (u32)period_ns, picos, start_cyc);
+		if (err)
+			goto out;
+
 		err = mv88e6xxx_g2_set_gpio_config(
 			chip, pin, MV88E6XXX_G2_SCRATCH_GPIO_MODE_TRIG,
 			MV88E6XXX_G2_SCRATCH_GPIO_DIR_OUT);
 	} else {
+		mutex_lock(&chip->reg_lock);
+
+		mv88e6xxx_disable_trig(chip);
 		err = mv88e6xxx_g2_set_gpio_config(
 			chip, pin, MV88E6XXX_G2_SCRATCH_GPIO_MODE_GPIO,
 			MV88E6XXX_G2_SCRATCH_GPIO_DIR_IN);
@@ -345,7 +435,7 @@ static int mv88e6xxx_ptp_enable_pps(struct mv88e6xxx_chip *chip,
 		if (err)
 			goto out;
 		err = mv88e6xxx_config_periodic_trig(chip,
-						     NSEC_PER_SEC, 0);
+						     NSEC_PER_SEC, 0, 0);
 		if (err)
 			goto out;
 
@@ -433,9 +523,8 @@ int mv88e6xxx_ptp_setup(struct mv88e6xxx_chip *chip)
 	memset(&chip->tstamp_cc, 0, sizeof(chip->tstamp_cc));
 	chip->tstamp_cc.read	= mv88e6xxx_ptp_clock_read;
 	chip->tstamp_cc.mask	= CYCLECOUNTER_MASK(32);
-	/* Raw timestamps are in units of 8-ns clock periods. */
-	chip->tstamp_cc.mult	= 8;
-	chip->tstamp_cc.shift	= 0;
+	chip->tstamp_cc.mult	= CC_MULT;
+	chip->tstamp_cc.shift	= FRAC_SHIFT;
 
 	timecounter_init(&chip->tstamp_tc, &chip->tstamp_cc,
 			 ktime_to_ns(ktime_get_real()));
@@ -448,7 +537,9 @@ int mv88e6xxx_ptp_setup(struct mv88e6xxx_chip *chip)
 	chip->ptp_clock_info.owner = THIS_MODULE;
 	snprintf(chip->ptp_clock_info.name, sizeof(chip->ptp_clock_info.name),
 		 dev_name(chip->dev));
-	chip->ptp_clock_info.max_adj	= 0;
+
+	// TODO: Figure out real max_adj
+	chip->ptp_clock_info.max_adj	= 50000000;
 
 	chip->ptp_clock_info.n_ext_ts	= 1;
 	chip->ptp_clock_info.n_per_out	= 1;
@@ -464,7 +555,10 @@ int mv88e6xxx_ptp_setup(struct mv88e6xxx_chip *chip)
 	}
 	chip->ptp_clock_info.pin_config = chip->pin_config;
 
+	/*
 	chip->ptp_clock_info.adjfine	= mv88e6xxx_ptp_adjfine;
+	*/
+	chip->ptp_clock_info.adjfreq    = mv88e6xxx_ptp_adjfreq;
 	chip->ptp_clock_info.adjtime	= mv88e6xxx_ptp_adjtime;
 	chip->ptp_clock_info.gettime64	= mv88e6xxx_ptp_gettime;
 	chip->ptp_clock_info.settime64	= mv88e6xxx_ptp_settime;
