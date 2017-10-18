@@ -70,35 +70,63 @@ static int mv88e6xxx_disable_trig(struct mv88e6xxx_chip *chip)
 	return err;
 }
 
-static int mv88e6xxx_config_periodic_trig(struct mv88e6xxx_chip *chip,
-					  u32 ns, u16 picos, u32 start)
+static int mv88e6xxx_update_periodic_trig(struct mv88e6xxx_chip *chip,
+					  u32 cycles, s16 picos)
 {
 	int err;
-	u16 global_config;
+	u16 comp_config;
 
-	if (picos >= 1000) {
-		dev_info(chip->dev, "Too many picos\n");
-		return -ERANGE;
+	if (picos < 0) {
+		comp_config = BIT(15) | (-picos);
+	} else {
+		comp_config = picos;
 	}
 
-	/* TRIG generation is in units of 8 ns clock periods. Convert ns
-	 * and ps into 8 ns clock periods and up to 8000 additional ps
-	 */
-	picos += (ns & 0x7) * 1000;
-	ns = ns >> 3;
-
 	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_GEN_AMOUNT_LO,
-				  ns & 0xffff);
+				  cycles & 0xffff);
 	if (err)
 		return err;
 
 	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_GEN_AMOUNT_HI,
-				  ns >> 16);
+				  cycles >> 16);
 	if (err)
 		return err;
 
 	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_CLOCK_COMP,
-				  picos);
+				  comp_config);
+	if (err)
+		return err;
+
+	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_CFG,
+				  0);
+
+	return err;
+}
+
+static int mv88e6xxx_config_periodic_trig(struct mv88e6xxx_chip *chip,
+					  u32 cycles, s16 picos, u32 start)
+{
+	int err;
+	u16 global_config, comp_config;
+
+	if (picos < 0) {
+		comp_config = BIT(15) | (-picos);
+	} else {
+		comp_config = picos;
+	}
+
+	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_GEN_AMOUNT_LO,
+				  cycles & 0xffff);
+	if (err)
+		return err;
+
+	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_GEN_AMOUNT_HI,
+				  cycles >> 16);
+	if (err)
+		return err;
+
+	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_CLOCK_COMP,
+				  comp_config);
 	if (err)
 		return err;
 
@@ -112,8 +140,16 @@ static int mv88e6xxx_config_periodic_trig(struct mv88e6xxx_chip *chip,
 	if (err)
 		return err;
 
+	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_CFG,
+				  0);
+	if (err)
+		return err;
 
-	chip->trig_config = MV88E6XXX_TAI_CFG_TRIG_ENABLE;
+
+
+
+	chip->trig_config = MV88E6XXX_TAI_CFG_BLOCK_UPDATE |
+		MV88E6XXX_TAI_CFG_TRIG_ENABLE;
 	global_config = (chip->evcap_config | chip->trig_config);
 	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_CFG, global_config);
 
@@ -219,11 +255,13 @@ static int mv88e6xxx_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 
 static int mv88e6xxx_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 {
-	u64 adj;
-	u32 diff, mult;
+	u64 adj, s_period_cyc;
+	u32 diff, mult, period_cyc;
+	s16 picos;
 	int neg_adj = 0;
-	struct mv88e6xxx_priv_state *chip =
-		container_of(ptp, struct mv88e6xxx_priv_state, ptp_clock_info);
+	int err = 0;
+	struct mv88e6xxx_chip *chip =
+		container_of(ptp, struct mv88e6xxx_chip, ptp_clock_info);
 
 	if (ppb == 0)
 		return 0;
@@ -237,12 +275,35 @@ static int mv88e6xxx_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 	adj *= ppb;
 	diff = div_u64(adj, 1000000000ULL);
 
+	mult = neg_adj ? mult - diff : mult + diff;
+
+	if (mult == chip->tstamp_cc.mult)
+		return 0;
+
+	if (chip->perout.nominal_period) {
+		s_period_cyc = (chip->perout.nominal_period <<
+				(chip->tstamp_cc.shift+10)) / mult;
+		period_cyc = s_period_cyc >> 10;
+		picos = ((s_period_cyc & 0x3ff) * 8000) >> 10;
+		if (picos > 4000) {
+			period_cyc += 1;
+			picos -= 8000;
+		}
+	} else {
+		period_cyc = 0;
+	}
+
 	mutex_lock(&chip->reg_lock);
 	timecounter_read(&chip->tstamp_tc);
-	chip->tstamp_cc.mult = neg_adj ? mult - diff : mult + diff;
+	chip->tstamp_cc.mult = mult;
+	if (period_cyc)
+		err = mv88e6xxx_update_periodic_trig(chip, period_cyc, picos);
 	mutex_unlock(&chip->reg_lock);
 
-	return 0;
+	if (period_cyc)
+		dev_info(chip->dev, "Adj duty cycle to period %u, picos %d\n", period_cyc, picos);
+
+	return err;
 }
 
 static int mv88e6xxx_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
@@ -330,20 +391,85 @@ out:
 	return err;
 }
 
+static void mv88e6xxx_ptp_trigger_lock(struct mv88e6xxx_chip *chip)
+{
+	u64 now_ns, edge_ns, frac_ns, wait_cycles, cycle, periods;
+	u32 mult, shift;
+	u16 global_config, status;
+	int err, corr;
+
+	if (chip->perout.nominal_period == 0)
+		return;
+
+	mutex_lock(&chip->reg_lock);
+	err = mv88e6xxx_tai_read(chip, MV88E6XXX_TAI_LOCK_STATUS, &status, 1);
+	if (err)
+		goto out;
+	now_ns = timecounter_read(&chip->tstamp_tc);
+	chip->last_overflow_check = jiffies;
+	mult = chip->tstamp_cc.mult;
+	shift = chip->tstamp_cc.shift;
+	cycle = chip->tstamp_tc.cycle_last;
+	frac_ns = chip->tstamp_tc.frac;
+	mutex_unlock(&chip->reg_lock);
+
+	edge_ns = chip->perout.last_edge_time;
+	periods = (now_ns - edge_ns) / chip->perout.nominal_period;
+	periods += 2;
+	edge_ns += chip->perout.nominal_period * periods;
+
+	wait_cycles = (((edge_ns - now_ns) << shift) - frac_ns + (1 << (shift-1))) / mult;
+	cycle = cycle + wait_cycles - PEROUT_DELAY_CYCLES;
+
+	mutex_lock(&chip->reg_lock);
+	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_TIME_LO,
+				  cycle & 0xffff);
+	if (err)
+		goto out;
+
+	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_TRIG_TIME_HI,
+				  cycle >> 16);
+	if (err)
+		goto out;
+
+	global_config = (chip->evcap_config | chip->trig_config |
+			 MV88E6XXX_TAI_CFG_TRIG_LOCK |
+			 MV88E6XXX_TAI_CFG_TRIG_RANGE(7));
+	err = mv88e6xxx_tai_write(chip, MV88E6XXX_TAI_CFG, global_config);
+	if (err)
+		goto out;
+
+	chip->perout.last_edge_time = edge_ns;
+	shift = (status >> 4) & 1;
+	if (shift) {
+		corr = status & 0x7;
+		if (status & 0x8)
+			corr = -corr;
+	} else {
+		corr = 0;
+	}
+	dev_info(chip->dev, "Trig lock at %llu wait %llu cyc %u prev valid: %d prev corr amt %d\n",
+		 edge_ns, edge_ns - now_ns, (u32)wait_cycles, shift, corr);
+ out:
+	mutex_unlock(&chip->reg_lock);
+	return;
+}
+
 static int mv88e6xxx_ptp_enable_perout(struct mv88e6xxx_chip *chip,
 				       struct ptp_clock_request *rq, int on)
 {
 	struct timespec ts;
 	struct timecounter *tc = &chip->tstamp_tc;
 	u64 period_ns, now_ns, start_ns;
-	u64 wait_ns, wait_cyc, frac_ns;
-	u32 start_cyc, mult, shift, picos;
+	u64 wait_ns, wait_cyc, s_period_cyc, frac_ns;
+	u32 start_cyc, period_cyc, mult, shift;
+	s16 picos;
 	int pin;
 	int err;
 
 	pin = ptp_find_pin(chip->ptp_clock, PTP_PF_PEROUT, rq->perout.index);
 
-	dev_info(chip->dev, "%s perout on pin %d\n", on ? "enable" : "disable", pin);
+	//dev_info(chip->dev, "%s perout on pin %d\n", on ? "enable" : "disable", pin);
 
 	if (pin < 0)
 		return -EBUSY;
@@ -353,7 +479,7 @@ static int mv88e6xxx_ptp_enable_perout(struct mv88e6xxx_chip *chip,
 		ts.tv_nsec = rq->perout.period.nsec;
 		period_ns = timespec_to_ns(&ts);
 
-		if (period_ns > U32_MAX) {
+		if ((period_ns / 8) > U32_MAX) {
 			dev_info(chip->dev, "period_ns too large\n");
 			return -ERANGE;
 		}
@@ -378,28 +504,38 @@ static int mv88e6xxx_ptp_enable_perout(struct mv88e6xxx_chip *chip,
 		}
 
 		wait_ns = start_ns - now_ns;
-		wait_cyc = ((wait_ns << shift) - frac_ns) / mult;
+		wait_cyc = ((wait_ns << shift) - frac_ns + (1 << (shift-1))) / mult;
 		start_cyc = (tc->cycle_last + wait_cyc) - PEROUT_DELAY_CYCLES;
 		if (start_cyc > tc->cc->mask) {
 			dev_info(chip->dev, "too far in the future\n");
 			return -ERANGE;
 		}
-		period_ns = (period_ns << shift) / mult;
-		picos = ((period_ns & 0x7) * 1000) >> 3;
-		period_ns = period_ns << 3;
+		s_period_cyc = (period_ns << (shift+10)) / mult;
+		period_cyc = s_period_cyc >> 10;
+		picos = ((s_period_cyc & 0x3ff) * 8000) >> 10;
+		if (picos > 4000) {
+			period_cyc += 1;
+			picos -= 8000;
+		}
 
-		dev_info(chip->dev, "Time: %llu (%llu cyc), start in %llu ns (%llu cyc) at ns %llu cycle %u period %u.%u\n",
-			 now_ns, tc->cycle_last, wait_ns, wait_cyc, start_ns, start_cyc, (u32)period_ns, picos);
+		dev_info(chip->dev, "Time: %llu (%llu cyc), start in %llu ns (%llu cyc) at ns %llu cycle %u period %u.%d\n",
+			 now_ns, tc->cycle_last, wait_ns, wait_cyc, start_ns, start_cyc, (u32)(period_cyc << 3), picos);
 
 		mutex_lock(&chip->reg_lock);
 
-		err = mv88e6xxx_config_periodic_trig(chip, (u32)period_ns, picos, start_cyc);
-		if (err)
-			goto out;
+		chip->perout.nominal_period = period_ns;
+		chip->perout.last_edge_time = start_ns;
 
 		err = mv88e6xxx_g2_set_gpio_config(
 			chip, pin, MV88E6XXX_G2_SCRATCH_GPIO_MODE_TRIG,
 			MV88E6XXX_G2_SCRATCH_GPIO_DIR_OUT);
+		if (err)
+			goto out;
+
+		err = mv88e6xxx_config_periodic_trig(chip, period_cyc, picos, start_cyc);
+		if (err)
+			goto out;
+
 	} else {
 		mutex_lock(&chip->reg_lock);
 
@@ -407,6 +543,9 @@ static int mv88e6xxx_ptp_enable_perout(struct mv88e6xxx_chip *chip,
 		err = mv88e6xxx_g2_set_gpio_config(
 			chip, pin, MV88E6XXX_G2_SCRATCH_GPIO_MODE_GPIO,
 			MV88E6XXX_G2_SCRATCH_GPIO_DIR_IN);
+
+		chip->perout.nominal_period = 0;
+		chip->perout.last_edge_time = 0;
 	}
 
 out:
@@ -435,7 +574,7 @@ static int mv88e6xxx_ptp_enable_pps(struct mv88e6xxx_chip *chip,
 		if (err)
 			goto out;
 		err = mv88e6xxx_config_periodic_trig(chip,
-						     NSEC_PER_SEC, 0, 0);
+						     NSEC_PER_SEC/8, 0, 0);
 		if (err)
 			goto out;
 
@@ -495,21 +634,19 @@ static int mv88e6xxx_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
 /* The 32-bit timestamp counter overflows every ~34.3 seconds; this task
  * forces periodic reads so that we don't miss any wraparounds.
  */
-#define MV88E6XXX_TAI_OVERFLOW_PERIOD (34 * HZ / 2)
+#define MV88E6XXX_TAI_OVERFLOW_PERIOD (4*HZ)
 static void mv88e6xxx_ptp_overflow_check(struct work_struct *work)
 {
 	struct delayed_work *dw = to_delayed_work(work);
 	struct mv88e6xxx_chip *chip =
 		container_of(dw, struct mv88e6xxx_chip, overflow_work);
-	bool timeout = time_is_before_jiffies(chip->last_overflow_check +
-					      MV88E6XXX_TAI_OVERFLOW_PERIOD);
 
-	if (timeout) {
-		mutex_lock(&chip->reg_lock);
-		timecounter_read(&chip->tstamp_tc);
-		chip->last_overflow_check = jiffies;
-		mutex_unlock(&chip->reg_lock);
-	}
+	mutex_lock(&chip->reg_lock);
+	timecounter_read(&chip->tstamp_tc);
+	chip->last_overflow_check = jiffies;
+	mutex_unlock(&chip->reg_lock);
+
+	//mv88e6xxx_ptp_trigger_lock(chip);
 
 	schedule_delayed_work(&chip->overflow_work,
 			      MV88E6XXX_TAI_OVERFLOW_PERIOD);
@@ -538,8 +675,7 @@ int mv88e6xxx_ptp_setup(struct mv88e6xxx_chip *chip)
 	snprintf(chip->ptp_clock_info.name, sizeof(chip->ptp_clock_info.name),
 		 dev_name(chip->dev));
 
-	// TODO: Figure out real max_adj
-	chip->ptp_clock_info.max_adj	= 50000000;
+	chip->ptp_clock_info.max_adj	= 500000;
 
 	chip->ptp_clock_info.n_ext_ts	= 1;
 	chip->ptp_clock_info.n_per_out	= 1;
@@ -554,6 +690,9 @@ int mv88e6xxx_ptp_setup(struct mv88e6xxx_chip *chip)
 		ppd->func = PTP_PF_NONE;
 	}
 	chip->ptp_clock_info.pin_config = chip->pin_config;
+
+	chip->perout.last_edge_time = 0;
+	chip->perout.nominal_period = 0;
 
 	/*
 	chip->ptp_clock_info.adjfine	= mv88e6xxx_ptp_adjfine;

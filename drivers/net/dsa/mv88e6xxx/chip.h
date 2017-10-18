@@ -186,6 +186,11 @@ struct mv88e6xxx_port_hwtstamp {
 	struct hwtstamp_config tstamp_config;
 };
 
+struct mv88e6xxx_perout_state {
+	u64 last_edge_time;
+	u32 nominal_period;
+};
+
 struct mv88e6xxx_chip {
 	const struct mv88e6xxx_info *info;
 
@@ -254,6 +259,11 @@ struct mv88e6xxx_chip {
 	struct ptp_pin_desc	pin_config[MV88E6XXX_MAX_GPIO];
 	u16 trig_config;
 	u16 evcap_config;
+
+	/* Data for keeping the 50% duty cycle output synchronized
+	 * with PTP grandmaster time
+	 */
+	struct mv88e6xxx_perout_state perout;
 
 	/* Per-port timestamping resources. */
 	struct mv88e6xxx_port_hwtstamp port_hwtstamp[DSA_MAX_PORTS];
