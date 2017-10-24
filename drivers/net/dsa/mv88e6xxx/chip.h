@@ -187,8 +187,28 @@ struct mv88e6xxx_port_hwtstamp {
 };
 
 struct mv88e6xxx_perout_state {
+
+	/* Grandmaster timestamp of last periodic output edge */
 	u64 last_edge_time;
+
+	/* Local cycle count of last periodic output edge */
+	u32 last_edge_cycle;
+
+	/* Period of output cycle referenced to Grandmaster time */
 	u32 nominal_period;
+
+	/* Local clock cycles per output period */
+	u32 period_cycles;
+
+	/* Absolute error in local scaled picoseconds between
+	 * (period_cycles * NS_PER_CYCLE) and nominal_period scaled
+	 * to local nanoseconds. Least significant 8 bits are
+	 * fractional.
+	 */
+	s32 scaled_picos;
+
+	/* Last frequency correction value from userspace */
+	long scaled_ppm;
 };
 
 struct mv88e6xxx_chip {
