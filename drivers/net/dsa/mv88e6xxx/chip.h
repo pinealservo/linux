@@ -167,6 +167,7 @@ struct mv88e6xxx_irq {
 enum {
 	MV88E6XXX_HWTSTAMP_ENABLED,
 	MV88E6XXX_HWTSTAMP_TX_IN_PROGRESS,
+	MV88E6XXX_HWTSTAMP_RX_IN_PROGRESS,
 };
 
 struct mv88e6xxx_port_hwtstamp {
@@ -181,6 +182,12 @@ struct mv88e6xxx_port_hwtstamp {
 	unsigned long tx_tstamp_start;
 	struct sk_buff *tx_skb;
 	u16 tx_seq_id;
+
+	/* Resources for receive timestamping */
+	struct work_struct rx_tstamp_work;
+	unsigned long rx_tstamp_start;
+	struct sk_buff *rx_skb;
+	u16 rx_seq_id;
 
 	/* Current timestamp configuration */
 	struct hwtstamp_config tstamp_config;

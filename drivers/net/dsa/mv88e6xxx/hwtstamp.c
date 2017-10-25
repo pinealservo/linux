@@ -55,6 +55,12 @@ static int mv88e6xxx_ptp_write(struct mv88e6xxx_chip *chip, int addr,
  */
 #define TX_TSTAMP_TIMEOUT	msecs_to_jiffies(20)
 
+/* RX_TSTAMP_TIMEOUT: This limits the time spent polling for a RX
+ * timestamp.
+ */
+#define RX_TSTAMP_TIMEOUT	msecs_to_jiffies(20)
+
+
 int mv88e6xxx_get_ts_info(struct dsa_switch *ds, int port,
 			  struct ethtool_ts_info *info)
 {
@@ -303,12 +309,129 @@ bool mv88e6xxx_port_rxtstamp(struct dsa_switch *ds, int port,
 		return false;
 	ptp_rx_ts = (__be32 *)(ptp_hdr + OFF_PTP_RESERVED);
 	raw_ts = __be32_to_cpu(*ptp_rx_ts);
+
+	/* In half-duplex mode this doesn't appear to work; we just get 0 in
+	 * the field where we would expect a timestamp. Queue a work task to
+	 * read the timestamp from the switch registers.
+	 */
+	if (raw_ts == 0) {
+		struct mv88e6xxx_port_hwtstamp *ps = &chip->port_hwtstamp[port];
+		__be16 *seq_ptr = (__be16 *)(_get_ptp_header(skb, type) +
+					     OFF_PTP_SEQUENCE_ID);
+
+		if (test_and_set_bit_lock(MV88E6XXX_HWTSTAMP_RX_IN_PROGRESS,
+					   &ps->state)) {
+			dev_warn(chip->dev, "p%d: rxtstamp already in progress\n", port);
+			return false;
+		}
+
+		ps->rx_skb = skb;
+		ps->rx_tstamp_start = jiffies;
+		ps->rx_seq_id = be16_to_cpup(seq_ptr);
+
+		queue_work(system_highpri_wq, &ps->rx_tstamp_work);
+		return true;
+	}
+
 	ns = timecounter_cyc2time(&chip->tstamp_tc, raw_ts);
 	shhwtstamps->hwtstamp = ns_to_ktime(ns);
-
 	dev_dbg(chip->dev, "p%d: rxtstamp %llx\n", port, ns);
 
 	return false;
+}
+
+static void mv88e6xxx_rxtstamp_work(struct work_struct *ugly)
+{
+	struct mv88e6xxx_port_hwtstamp *ps = container_of(
+		ugly, struct mv88e6xxx_port_hwtstamp, rx_tstamp_work);
+	struct mv88e6xxx_chip *chip = container_of(
+		ps, struct mv88e6xxx_chip, port_hwtstamp[ps->port_id]);
+	struct sk_buff *tmp_skb;
+	struct skb_shared_hwtstamps *shhwtstamps;
+	unsigned long tmp_tstamp_start;
+	int err;
+	u16 arrival_block[4];
+	u16 tmp_seq_id;
+	u64 ns;
+	u32 time_raw;
+	u16 status;
+
+	if (!test_bit(MV88E6XXX_HWTSTAMP_RX_IN_PROGRESS, &ps->state))
+		return;
+
+	tmp_skb = ps->rx_skb;
+	tmp_seq_id = ps->rx_seq_id;
+	tmp_tstamp_start = ps->rx_tstamp_start;
+
+	if (!tmp_skb)
+		return;
+
+	mutex_lock(&chip->reg_lock);
+	err = mv88e6xxx_port_ptp_read(chip, ps->port_id,
+				      MV88E6XXX_PORT_PTP_ARR0_STS,
+				      arrival_block,
+				      ARRAY_SIZE(arrival_block));
+	mutex_unlock(&chip->reg_lock);
+
+	if (err) {
+		dev_warn(chip->dev, "p%d: couldn't read rx timestamp\n",
+			ps->port_id);
+		goto process_skb;
+	}
+
+	if (!(arrival_block[0] & MV88E6XXX_PTP_TS_VALID)) {
+		if (time_is_before_jiffies(
+			    tmp_tstamp_start + RX_TSTAMP_TIMEOUT)) {
+			dev_warn(chip->dev, "p%d: clearing rx timestamp hang\n",
+				 ps->port_id);
+			goto process_skb;
+		}
+
+		dev_warn(chip->dev, "p%d: requeuing rx timestamp task\n",
+			 ps->port_id);
+
+		queue_work(system_highpri_wq, &ps->rx_tstamp_work);
+
+		return;
+	}
+
+
+	/* We have the timestamp; go ahead and clear valid now */
+	mutex_lock(&chip->reg_lock);
+	mv88e6xxx_port_ptp_write(chip, ps->port_id,
+				 MV88E6XXX_PORT_PTP_ARR0_STS, 0);
+	mutex_unlock(&chip->reg_lock);
+
+	status = arrival_block[0] &
+		MV88E6XXX_PTP_TS_STATUS_MASK;
+	if (status != MV88E6XXX_PTP_TS_STATUS_NORMAL) {
+		dev_warn(chip->dev, "p%d: rx timestamp overrun\n",
+			 ps->port_id);
+	}
+
+	if (arrival_block[3] != tmp_seq_id) {
+		dev_warn(chip->dev, "p%d: rx seqid: expected %u got %u\n",
+			 ps->port_id, tmp_seq_id, arrival_block[3]);
+		goto process_skb;
+	}
+
+	shhwtstamps = skb_hwtstamps(tmp_skb);
+	memset(shhwtstamps, 0, sizeof(*shhwtstamps));
+	time_raw = ((u32)arrival_block[2] << 16) |
+		arrival_block[1];
+	ns = timecounter_cyc2time(&chip->tstamp_tc, time_raw);
+	shhwtstamps->hwtstamp = ns_to_ktime(ns);
+
+	dev_dbg(chip->dev,
+		"p%d: rxtstamp %llx status 0x%04x skb ID 0x%04x hw ID 0x%04x\n",
+		ps->port_id, ktime_to_ns(shhwtstamps->hwtstamp),
+		arrival_block[0], tmp_seq_id, arrival_block[3]);
+
+process_skb:
+	ps->rx_skb = NULL;
+	clear_bit_unlock(MV88E6XXX_HWTSTAMP_RX_IN_PROGRESS, &ps->state);
+
+	netif_receive_skb(tmp_skb);
 }
 
 static void mv88e6xxx_txtstamp_work(struct work_struct *ugly)
@@ -467,6 +590,7 @@ static int mv88e6xxx_hwtstamp_port_setup(struct mv88e6xxx_chip *chip, int port)
 
 	ps->port_id = port;
 	INIT_WORK(&ps->tx_tstamp_work, mv88e6xxx_txtstamp_work);
+	INIT_WORK(&ps->rx_tstamp_work, mv88e6xxx_rxtstamp_work);
 
 	return mv88e6xxx_port_ptp_write(chip, port, MV88E6XXX_PORT_PTP_CFG0,
 					MV88E6XXX_PORT_PTP_CFG0_DISABLE_PTP);
@@ -477,6 +601,7 @@ static void mv88e6xxx_hwtstamp_port_free(struct mv88e6xxx_chip *chip, int port)
 	struct mv88e6xxx_port_hwtstamp *ps = &chip->port_hwtstamp[port];
 
 	cancel_work_sync(&ps->tx_tstamp_work);
+	cancel_work_sync(&ps->rx_tstamp_work);
 }
 
 int mv88e6xxx_hwtstamp_setup(struct mv88e6xxx_chip *chip)
