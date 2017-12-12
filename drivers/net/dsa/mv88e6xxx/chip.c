@@ -3825,6 +3825,79 @@ static int mv88e6xxx_port_mdb_del(struct dsa_switch *ds, int port,
 	return err;
 }
 
+static int mv88e6xxx_avb_cmd(struct dsa_switch *ds, int port, int block,
+			     int addr, struct avb_cmd_data *data)
+{
+	struct mv88e6xxx_chip *chip = ds->priv;
+	int ret;
+
+	/* Op #1 is reserved; as are ops > 3 */
+	if (data->op == 1 || data->op > 3)
+		return -EOPNOTSUPP;
+
+	switch (data->op) {
+	case AVB_OP_READ:
+		/* Only a single value can be read via READ */
+		if (data->count != 1)
+			return -EOPNOTSUPP;
+
+		mutex_lock(&chip->reg_lock);
+		ret = chip->info->ops->avb_ops->port_block_ptp_read(chip, port,
+								    block, addr,
+								    data->val, 1);
+		mutex_unlock(&chip->reg_lock);
+		return ret;
+	case AVB_OP_READ_POSTINC:
+		/* Only up to 4 values can be read via POSTINC */
+		if (data->count < 1 || data->count > 4)
+			return -EOPNOTSUPP;
+		mutex_lock(&chip->reg_lock);
+		ret = chip->info->ops->avb_ops->port_block_ptp_read(chip, port,
+								    block, addr,
+								    data->val,
+								    data->count);
+		mutex_unlock(&chip->reg_lock);
+		return ret;
+	case AVB_OP_WRITE:
+		/* Only a single value can be written via WRITE */
+		if (data->count != 1)
+			return -EOPNOTSUPP;
+		mutex_lock(&chip->reg_lock);
+		ret = chip->info->ops->avb_ops->port_block_ptp_write(chip, port,
+								     block, addr,
+								     data->val[0]);
+
+		mutex_unlock(&chip->reg_lock);
+		return ret;
+	default:
+		pr_err("Unknown avb op\n");
+		return -EOPNOTSUPP;
+	}
+}
+
+static int mv88e6xxx_scratch_cmd(struct dsa_switch *ds, int op, int idx, u8 *data)
+{
+	struct mv88e6xxx_chip *chip = ds->priv;
+	int ret = 0;
+
+	switch (op) {
+	case SCRATCH_OP_READ:
+		mutex_lock(&chip->reg_lock);
+		ret = mv88e6xxx_g2_scratch_reg_read(chip, idx, data);
+		mutex_unlock(&chip->reg_lock);
+		break;
+	case SCRATCH_OP_WRITE:
+		mutex_lock(&chip->reg_lock);
+		ret = mv88e6xxx_g2_scratch_reg_write(chip, idx, *data);
+		mutex_unlock(&chip->reg_lock);
+		break;
+	default:
+		ret = -EOPNOTSUPP;
+		break;
+	}
+	return ret;
+}
+
 static const struct dsa_switch_ops mv88e6xxx_switch_ops = {
 	.probe			= mv88e6xxx_drv_probe,
 	.get_tag_protocol	= mv88e6xxx_get_tag_protocol,
@@ -3865,6 +3938,8 @@ static const struct dsa_switch_ops mv88e6xxx_switch_ops = {
 	.port_txtstamp		= mv88e6xxx_port_txtstamp,
 	.port_rxtstamp		= mv88e6xxx_port_rxtstamp,
 	.get_ts_info		= mv88e6xxx_get_ts_info,
+	.avb_cmd		= mv88e6xxx_avb_cmd,
+	.scratch_cmd 		= mv88e6xxx_scratch_cmd,
 };
 
 static struct dsa_switch_driver mv88e6xxx_switch_drv = {

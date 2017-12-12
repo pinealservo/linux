@@ -145,6 +145,10 @@
  
 #define SIOCDEVPRIVATE	0x89F0	/* to 89FF */
 
+/* avb control */
+#define SIOCAVBCMD      0x89F1  /* run raw AVB command (Limited to some Marvell Link Street switches) */
+#define SIOCSCRATCHCMD  0x89F2  /* run raw scratch command */
+
 /*
  *	These 16 ioctl calls are protocol private
  */

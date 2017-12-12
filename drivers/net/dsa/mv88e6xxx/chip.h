@@ -35,6 +35,9 @@
 #define SMI_CMD_OP_45_READ_DATA_INC	((3 << 10) | SMI_CMD_BUSY)
 #define SMI_DATA		0x01
 
+#define SCRATCH_OP_READ 0
+#define SCRATCH_OP_WRITE 1
+
 #define MV88E6XXX_N_FID		4096
 
 /* PVT limits for 4-bit port and 5-bit switch */
@@ -448,6 +451,10 @@ struct mv88e6xxx_avb_ops {
 			     u16 *data, int len);
 	int (*port_ptp_write)(struct mv88e6xxx_chip *chip, int port, int addr,
 			      u16 data);
+	int (*port_block_ptp_read)(struct mv88e6xxx_chip *chip, int port, int block,
+				   int addr, u16 *data, int len);
+	int (*port_block_ptp_write)(struct mv88e6xxx_chip *chip, int port, int block,
+				    int addr, u16 data);
 	int (*ptp_read)(struct mv88e6xxx_chip *chip, int addr, u16 *data,
 			int len);
 	int (*ptp_write)(struct mv88e6xxx_chip *chip, int addr, u16 data);

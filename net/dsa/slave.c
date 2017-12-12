@@ -277,6 +277,19 @@ dsa_slave_fdb_dump(struct sk_buff *skb, struct netlink_callback *cb,
 	return err;
 }
 
+struct avb_usr_request {
+	u16 port;
+	u16 block;
+	u16 addr;
+	u8 op;
+	u8 count;
+	u16 val[4];
+};
+struct scratch_cmd {
+	u8 op;
+	u8 idx;
+	u8 data;
+};
 static int dsa_slave_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
 	struct dsa_slave_priv *p = netdev_priv(dev);
@@ -287,6 +300,45 @@ static int dsa_slave_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		return -ENODEV;
 
 	switch (cmd) {
+	case SIOCAVBCMD: {
+		struct avb_usr_request *usr_req;
+		struct avb_cmd_data data;
+		int port, block, addr;
+		int ret;
+
+		if (ifr)
+			usr_req = ifr->ifr_ifru.ifru_data;
+		else
+			return -EOPNOTSUPP;
+
+		port = usr_req->port;
+		block = usr_req->block;
+		addr = usr_req->addr;
+		data.op = usr_req->op;
+		data.count = usr_req->count;
+		data.val[0] = usr_req->val[0];
+		data.val[1] = usr_req->val[1];
+		data.val[2] = usr_req->val[2];
+		data.val[3] = usr_req->val[3];
+
+		ret = ds->ops->avb_cmd(ds, port, block, addr, &data);
+		if (ret == 0) {
+			usr_req->val[0] = data.val[0];
+			usr_req->val[1] = data.val[1];
+			usr_req->val[2] = data.val[2];
+			usr_req->val[3] = data.val[3];
+		}
+
+		return ret;
+	}
+	case SIOCSCRATCHCMD: {
+		struct scratch_cmd *cmd;
+		if (ifr)
+			cmd = ifr->ifr_ifru.ifru_data;
+		else
+			return -EOPNOTSUPP;
+		return ds->ops->scratch_cmd(ds, cmd->op, cmd->idx, &(cmd->data));
+	}
 	case SIOCGMIIPHY:
 	case SIOCGMIIREG:
 	case SIOCSMIIREG:

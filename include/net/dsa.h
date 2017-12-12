@@ -257,6 +257,16 @@ struct dsa_switch {
 	struct dsa_port ports[];
 };
 
+struct avb_cmd_data {
+	u8 op;
+	u8 count;
+	u16 val[4];
+};
+
+#define AVB_OP_READ 0
+#define AVB_OP_READ_POSTINC 2
+#define AVB_OP_WRITE 3
+
 static inline bool dsa_is_cpu_port(struct dsa_switch *ds, int p)
 {
 	return !!(ds->cpu_port_mask & (1 << p));
@@ -459,6 +469,9 @@ struct dsa_switch_ops {
 				 struct sk_buff *clone, unsigned int type);
 	bool	(*port_rxtstamp)(struct dsa_switch *ds, int port,
 				 struct sk_buff *skb, unsigned int type);
+	int	(*avb_cmd)(struct dsa_switch *ds, int port, int block,
+			   int addr, struct avb_cmd_data *data);
+	int	(*scratch_cmd)(struct dsa_switch *ds, int op, int idx, u8 *data);
 };
 
 struct dsa_switch_driver {

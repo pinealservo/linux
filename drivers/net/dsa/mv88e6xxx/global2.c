@@ -661,6 +661,28 @@ static int mv88e6352_port_ptp_write(struct mv88e6xxx_chip *chip, int port,
 	return mv88e6xxx_g2_avb_write(chip, writeop, data);
 }
 
+static int mv88e6352_port_block_ptp_read(struct mv88e6xxx_chip *chip,
+					 int port, int block, int addr,
+					 u16 *data, int len)
+{
+	u16 readop = (len == 1 ? MV88E6352_G2_AVB_CMD_OP_READ :
+		      MV88E6352_G2_AVB_CMD_OP_READ_INCR) |
+		(port << 8) | (block << 5) |
+		addr;
+
+	return mv88e6xxx_g2_avb_read(chip, readop, data, len);
+}
+
+static int mv88e6352_port_block_ptp_write(struct mv88e6xxx_chip *chip,
+					  int port, int block, int addr,
+					  u16 data)
+{
+	u16 writeop = MV88E6352_G2_AVB_CMD_OP_WRITE | (port << 8) |
+		(block << 5) | addr;
+
+	return mv88e6xxx_g2_avb_write(chip, writeop, data);
+}
+
 static int mv88e6352_ptp_read(struct mv88e6xxx_chip *chip, int addr,
 			      u16 *data, int len)
 {
@@ -696,6 +718,8 @@ static int mv88e6352_tai_write(struct mv88e6xxx_chip *chip, int addr,
 const struct mv88e6xxx_avb_ops mv88e6352_avb_ops = {
 	.port_ptp_read		= mv88e6352_port_ptp_read,
 	.port_ptp_write		= mv88e6352_port_ptp_write,
+	.port_block_ptp_read    = mv88e6352_port_block_ptp_read,
+	.port_block_ptp_write   = mv88e6352_port_block_ptp_write,
 	.ptp_read		= mv88e6352_ptp_read,
 	.ptp_write		= mv88e6352_ptp_write,
 	.tai_read		= mv88e6352_tai_read,
@@ -718,6 +742,26 @@ static int mv88e6390_port_ptp_write(struct mv88e6xxx_chip *chip, int port,
 {
 	u16 writeop = MV88E6390_G2_AVB_CMD_OP_WRITE | (port << 8) |
 		      (MV88E6352_G2_AVB_CMD_BLOCK_PTP << 5) | addr;
+
+	return mv88e6xxx_g2_avb_write(chip, writeop, data);
+}
+
+static int mv88e6390_port_block_ptp_read(struct mv88e6xxx_chip *chip, int port,
+					 int block, int addr, u16 *data, int len)
+{
+	u16 readop = (len == 1 ? MV88E6390_G2_AVB_CMD_OP_READ :
+		      MV88E6390_G2_AVB_CMD_OP_READ_INCR) |
+		(port << 8) | (block << 5) |
+		addr;
+
+	return mv88e6xxx_g2_avb_read(chip, readop, data, len);
+}
+
+static int mv88e6390_port_block_ptp_write(struct mv88e6xxx_chip *chip, int port,
+					  int block, int addr, u16 data)
+{
+	u16 writeop = MV88E6390_G2_AVB_CMD_OP_WRITE | (port << 8) |
+		(block << 5) | addr;
 
 	return mv88e6xxx_g2_avb_write(chip, writeop, data);
 }
@@ -757,6 +801,8 @@ static int mv88e6390_tai_write(struct mv88e6xxx_chip *chip, int addr,
 const struct mv88e6xxx_avb_ops mv88e6390_avb_ops = {
 	.port_ptp_read		= mv88e6390_port_ptp_read,
 	.port_ptp_write		= mv88e6390_port_ptp_write,
+	.port_block_ptp_read	= mv88e6390_port_block_ptp_read,
+	.port_block_ptp_write	= mv88e6390_port_block_ptp_write,
 	.ptp_read		= mv88e6390_ptp_read,
 	.ptp_write		= mv88e6390_ptp_write,
 	.tai_read		= mv88e6390_tai_read,
@@ -972,7 +1018,7 @@ int mv88e6xxx_g2_smi_phy_write(struct mv88e6xxx_chip *chip, struct mii_bus *bus,
 }
 
 /* Offset 0x1A: Scratch and Misc. Register */
-static int mv88e6xxx_g2_scratch_reg_read(struct mv88e6xxx_chip *chip,
+int mv88e6xxx_g2_scratch_reg_read(struct mv88e6xxx_chip *chip,
 					 int reg, u8 *data)
 {
 	int err;
@@ -992,7 +1038,7 @@ static int mv88e6xxx_g2_scratch_reg_read(struct mv88e6xxx_chip *chip,
 	return 0;
 }
 
-static int mv88e6xxx_g2_scratch_reg_write(struct mv88e6xxx_chip *chip,
+int mv88e6xxx_g2_scratch_reg_write(struct mv88e6xxx_chip *chip,
 					  int reg, u8 data)
 {
 	u16 value = (reg << 8) | data;

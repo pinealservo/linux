@@ -293,6 +293,10 @@ int mv88e6xxx_g2_get_eeprom16(struct mv88e6xxx_chip *chip,
 int mv88e6xxx_g2_set_eeprom16(struct mv88e6xxx_chip *chip,
 			      struct ethtool_eeprom *eeprom, u8 *data);
 
+int mv88e6xxx_g2_scratch_reg_read(struct mv88e6xxx_chip *chip,
+				  int reg, u8 *data);
+int mv88e6xxx_g2_scratch_reg_write(struct mv88e6xxx_chip *chip,
+				   int reg, u8 data);
 int mv88e6xxx_g2_set_gpio_config(struct mv88e6xxx_chip *chip, int pin,
 				 int func, int dir);
 
