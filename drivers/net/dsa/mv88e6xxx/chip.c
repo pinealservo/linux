@@ -527,6 +527,7 @@ static int mv88e6xxx_stats_snapshot(struct mv88e6xxx_chip *chip, int port)
 }
 
 static struct mv88e6xxx_hw_stat mv88e6xxx_hw_stats[] = {
+	/*
 	{ "in_good_octets",		8, 0x00, STATS_TYPE_BANK0, },
 	{ "in_bad_octets",		4, 0x02, STATS_TYPE_BANK0, },
 	{ "in_unicast",			4, 0x04, STATS_TYPE_BANK0, },
@@ -544,6 +545,8 @@ static struct mv88e6xxx_hw_stat mv88e6xxx_hw_stats[] = {
 	{ "out_broadcasts",		4, 0x13, STATS_TYPE_BANK0, },
 	{ "out_multicasts",		4, 0x12, STATS_TYPE_BANK0, },
 	{ "out_pause",			4, 0x15, STATS_TYPE_BANK0, },
+	*/
+	/*
 	{ "excessive",			4, 0x11, STATS_TYPE_BANK0, },
 	{ "collisions",			4, 0x1e, STATS_TYPE_BANK0, },
 	{ "deferred",			4, 0x05, STATS_TYPE_BANK0, },
@@ -551,15 +554,22 @@ static struct mv88e6xxx_hw_stat mv88e6xxx_hw_stats[] = {
 	{ "multiple",			4, 0x17, STATS_TYPE_BANK0, },
 	{ "out_fcs_error",		4, 0x03, STATS_TYPE_BANK0, },
 	{ "late",			4, 0x1f, STATS_TYPE_BANK0, },
+	*/
+	/*
 	{ "hist_64bytes",		4, 0x08, STATS_TYPE_BANK0, },
 	{ "hist_65_127bytes",		4, 0x09, STATS_TYPE_BANK0, },
 	{ "hist_128_255bytes",		4, 0x0a, STATS_TYPE_BANK0, },
 	{ "hist_256_511bytes",		4, 0x0b, STATS_TYPE_BANK0, },
 	{ "hist_512_1023bytes",		4, 0x0c, STATS_TYPE_BANK0, },
 	{ "hist_1024_max_bytes",	4, 0x0d, STATS_TYPE_BANK0, },
+	*/
+	/*
 	{ "sw_in_discards",		4, 0x10, STATS_TYPE_PORT, },
 	{ "sw_in_filtered",		2, 0x12, STATS_TYPE_PORT, },
 	{ "sw_out_filtered",		2, 0x13, STATS_TYPE_PORT, },
+	*/
+	{ "debug_counter",		2, 0x13, STATS_TYPE_PORT, },
+	/*
 	{ "in_discards",		4, 0x00, STATS_TYPE_BANK1, },
 	{ "in_filtered",		4, 0x01, STATS_TYPE_BANK1, },
 	{ "in_accepted",		4, 0x02, STATS_TYPE_BANK1, },
@@ -574,6 +584,7 @@ static struct mv88e6xxx_hw_stat mv88e6xxx_hw_stats[] = {
 	{ "tcam_counter_3",		4, 0x0b, STATS_TYPE_BANK1, },
 	{ "in_da_unknown",		4, 0x0e, STATS_TYPE_BANK1, },
 	{ "in_management",		4, 0x0f, STATS_TYPE_BANK1, },
+	*/
 	{ "out_queue_0",		4, 0x10, STATS_TYPE_BANK1, },
 	{ "out_queue_1",		4, 0x11, STATS_TYPE_BANK1, },
 	{ "out_queue_2",		4, 0x12, STATS_TYPE_BANK1, },
@@ -582,9 +593,11 @@ static struct mv88e6xxx_hw_stat mv88e6xxx_hw_stats[] = {
 	{ "out_queue_5",		4, 0x15, STATS_TYPE_BANK1, },
 	{ "out_queue_6",		4, 0x16, STATS_TYPE_BANK1, },
 	{ "out_queue_7",		4, 0x17, STATS_TYPE_BANK1, },
+	/*
 	{ "out_cut_through",		4, 0x18, STATS_TYPE_BANK1, },
 	{ "out_octets_a",		4, 0x1a, STATS_TYPE_BANK1, },
 	{ "out_octets_b",		4, 0x1b, STATS_TYPE_BANK1, },
+	*/
 	{ "out_management",		4, 0x1f, STATS_TYPE_BANK1, },
 };
 
@@ -1926,6 +1939,7 @@ static int mv88e6xxx_g1_setup(struct mv88e6xxx_chip *chip)
 	/* Disable remote management, and set the switch's DSA device number. */
 	err = mv88e6xxx_g1_write(chip, MV88E6XXX_G1_CTL2,
 				 MV88E6XXX_G1_CTL2_MULTIPLE_CASCADE |
+				 MV88E6XXX_G1_CTL2_COUNTER_MODE |
 				 (ds->index & 0x1f));
 	if (err)
 		return err;
